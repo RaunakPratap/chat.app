@@ -1,0 +1,21 @@
+# Dependencies & Environment
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+logs/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+backend/private/
+
+# Android & IDE
+.gradle/
+.idea/
+.kotlin/
+build/
+app/build/
+local.properties
+*.iml
+.DS_Store
