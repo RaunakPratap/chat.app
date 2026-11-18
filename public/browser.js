@@ -153,6 +153,7 @@ async function resolveBackendBase(force = false) {
 
     const sources = [
       GITHUB_BACKEND_URL_FILE + '?ts=' + Date.now(),
+      '/backend-url.txt?ts=' + Date.now(),
       '/runtime-config.json?ts=' + Date.now(),
       '/api/backend-url?ts=' + Date.now()
     ];
