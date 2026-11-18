@@ -223,8 +223,16 @@ async function api(url, data = null) {
       await resolveBackendBase(attempt > 0);
       const r = await fetch(backendUrl(url), { ...baseOpts, headers: { ...(baseOpts.headers || {}), ...authHeaders() } });
       const j = await r.json().catch(() => null);
-      if (!j) throw Error('Server returned invalid response.');
-      if (!r.ok || j.ok === false) throw Error(j.error || 'Request failed');
+      if (!j) {
+        const err = Error('Server returned invalid response.');
+        err.status = r.status;
+        throw err;
+      }
+      if (!r.ok || j.ok === false) {
+        const err = Error(j?.error || (r.status === 401 ? 'Unauthorized' : 'Request failed'));
+        err.status = r.status;
+        throw err;
+      }
       return j;
     } catch (e) {
       lastError = e;
@@ -432,7 +440,15 @@ async function boot() {
       void setupFCM();
       return;
     }
-  } catch {
+  } catch (err) {
+    const isAuthError = err?.status === 401 || /unauthorized|invalid token/i.test(String(err?.message || err));
+    if (isAuthError) {
+      await clearAuthToken();
+      localStorage.removeItem('mychat_user_cache');
+      me = null;
+      auth('login');
+      return;
+    }
     if (token) {
       const cached = cachedUser();
       if (cached?.id) {
