@@ -7,7 +7,8 @@ echo   Pushing latest frontend files to GitHub (chat.app)...
 echo ========================================================
 echo.
 
-git add public/ vercel.json package.json package-lock.json server.js start.bat publish.bat .gitignore backend-url.txt
+git pull --rebase origin main
+git add public/ vercel.json package.json package-lock.json server.js start.bat publish.bat .gitignore backend-url.txt app/
 git commit -m "Update frontend files for Vercel deployment"
 git push origin main
 
