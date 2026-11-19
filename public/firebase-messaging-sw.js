@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mychat-shell-v83';
+const CACHE_NAME = 'mychat-shell-v84';
 self.addEventListener('install', event => {
   self.skipWaiting();
   event.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(['/manifest.json','/','/browser.js','/firebase-config.js','/icon-192.png','/icon-512.png'])).catch(()=>{}));

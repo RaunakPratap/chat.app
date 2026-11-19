@@ -143,54 +143,92 @@ function backendUrl(path) {
   return normalizeBackendBase(backendBase) + (p.startsWith('/') ? p : '/' + p);
 }
 
+async function isBackendReachable(url) {
+  try {
+    const base = normalizeBackendBase(url);
+    if (!/^https?:\/\//i.test(base)) return false;
+    const hr = await fetch(base + '/healthz?ts=' + Date.now(), { cache: 'no-store', credentials: 'omit' });
+    if (hr.ok) {
+      const hj = await hr.json().catch(() => ({}));
+      return hj.ok === true;
+    }
+  } catch {}
+  return false;
+}
+
 async function resolveBackendBase(force = false) {
   if (!force && backendBase) return backendBase;
   if (backendResolvePromise && !force) return backendResolvePromise;
   backendResolvePromise = (async () => {
-    let raw = '';
+    const candidates = [];
     const sameOrigin = (location.protocol === 'http:' || location.protocol === 'https:') && /^(localhost|127\.0\.0\.1|[\w-]+\.trycloudflare\.com)$/i.test(location.hostname);
-    if (sameOrigin) raw = location.origin;
+    if (sameOrigin) candidates.push(location.origin);
 
-    const sources = [
-      GITHUB_BACKEND_URL_FILE + '?ts=' + Date.now(),
-      '/backend-url.txt?ts=' + Date.now(),
-      '/runtime-config.json?ts=' + Date.now(),
-      '/api/backend-url?ts=' + Date.now()
-    ];
-    for (const src of sources) {
-      if (raw) break;
+    // 1. GitHub REST API (always direct, bypasses Fastly 5-minute CDN cache)
+    try {
+      const apiRes = await fetch('https://api.github.com/repos/RaunakPratap/chat.app/contents/backend-url.txt?ts=' + Date.now(), { cache: 'no-store' });
+      if (apiRes.ok) {
+        const j = await apiRes.json();
+        if (j.content) {
+          const decoded = atob(j.content.replace(/\s+/g, '')).trim();
+          if (/^https?:\/\/\S+$/i.test(decoded)) candidates.push(decoded);
+        }
+      }
+    } catch {}
+
+    // 2. Raw GitHub URL
+    try {
+      const r = await fetch(GITHUB_BACKEND_URL_FILE + '?ts=' + Date.now(), { cache: 'no-store' });
+      if (r.ok) {
+        const t = (await r.text()).trim();
+        if (/^https?:\/\/\S+$/i.test(t)) candidates.push(t);
+      }
+    } catch {}
+
+    // 3 & 4. Static fallbacks
+    for (const p of ['/backend-url.txt?ts=' + Date.now(), '/runtime-config.json?ts=' + Date.now()]) {
       try {
-        const r = await fetch(src, { cache: 'no-store' });
+        const r = await fetch(p, { cache: 'no-store' });
         if (r.ok) {
-          const text = (await r.text()).trim();
-          if (/^https?:\/\/\S+$/i.test(text)) {
-            raw = text;
-          } else {
-            const j = JSON.parse(text);
-            raw = j.backend_url || j.url || '';
+          const t = (await r.text()).trim();
+          if (/^https?:\/\/\S+$/i.test(t)) candidates.push(t);
+          else {
+            const j = JSON.parse(t);
+            if (j.backend_url) candidates.push(j.backend_url);
           }
         }
       } catch {}
     }
 
-    if (!raw) throw Error('Backend URL is not ready. Make sure start.bat is running on the server PC.');
-    const next = normalizeBackendBase(raw);
-    if (!/^https?:\/\//i.test(next)) throw Error('Invalid backend URL');
-
-    let reachable = false;
-    for (let probe = 0; probe < 3; probe++) {
-      try {
-        const hr = await fetch(next + '/healthz?ts=' + Date.now(), { cache: 'no-store', credentials: 'omit' });
-        if (hr.ok) {
-          const hj = await hr.json().catch(() => ({}));
-          if (hj.ok === true) { reachable = true; break; }
-        }
-      } catch {}
-      await new Promise(r => setTimeout(r, 600));
+    // Probe candidates to pick one that is ACTUALLY live:
+    let live = '';
+    const tried = new Set();
+    for (const c of candidates) {
+      const norm = normalizeBackendBase(c);
+      if (!norm || tried.has(norm)) continue;
+      tried.add(norm);
+      if (await isBackendReachable(norm)) {
+        live = norm;
+        break;
+      }
     }
-    if (!reachable) throw Error('Backend unreachable. Verify start.bat and Cloudflare Tunnel are active.');
-    const changed = backendBase && backendBase !== next;
-    backendBase = next;
+
+    // If none answered immediately, wait 800ms and try once more (tunnel might be settling)
+    if (!live && candidates.length > 0) {
+      await new Promise(r => setTimeout(r, 800));
+      for (const c of candidates) {
+        const norm = normalizeBackendBase(c);
+        if (norm && await isBackendReachable(norm)) {
+          live = norm;
+          break;
+        }
+      }
+    }
+
+    if (!live) throw Error('Backend unreachable. Verify start.bat and Cloudflare Tunnel are active.');
+
+    const changed = backendBase && backendBase !== live;
+    backendBase = live;
     if (changed && ws) { try { ws.close(4001, 'Backend changed'); } catch {} }
     return backendBase;
   })().finally(() => { backendResolvePromise = null; });
@@ -1428,6 +1466,7 @@ async function connectWS(forceRefresh = false) {
     setRT(false, wsRetry ? 'Reconnecting…' : 'Connecting…');
     ws = new WebSocket(url);
     ws.onopen = () => {
+      wsRetry = 0;
       setRT(true, '● Realtime');
       wsSend({ type: 'sync' });
       const ownDp = localDp(me?.id);
@@ -1440,13 +1479,13 @@ async function connectWS(forceRefresh = false) {
       wsReady = false;
       setRT(false, `Reconnecting… (${e.code})`);
       wsRetry = Math.min(wsRetry + 1, 6);
-      wsTimer = setTimeout(() => connectWS(true), Math.min(15000, 1000 * 2 ** wsRetry));
+      wsTimer = setTimeout(() => connectWS(true), Math.min(10000, 1000 * 2 ** wsRetry));
     };
   } catch {
     wsReady = false;
     setRT(false, 'Offline');
     wsRetry = Math.min(wsRetry + 1, 6);
-    wsTimer = setTimeout(() => connectWS(true), Math.min(20000, 1500 * wsRetry));
+    wsTimer = setTimeout(() => connectWS(true), Math.min(10000, 1500 * wsRetry));
   }
 }
 
